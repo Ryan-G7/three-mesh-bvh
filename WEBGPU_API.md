@@ -93,6 +93,10 @@ constructor(
 		// When true, a [MeshBVH](MeshBVH) is automatically built for any
 		// object that does not already have `geometry.boundsTree` set.
 		autogenerateBvh = true: boolean,
+
+		// Use 8-way nodes with conservative 8-bit quantized bounds.
+		// The CPU BVH and its serialization format are unchanged.
+		useCompressedWideBVH = false: boolean,
 	}
 )
 ```
@@ -122,6 +126,10 @@ getShapecastFn(
 
 		// function node controlling left/right child traversal order.
 		boundsOrderFn?: function | null,
+
+		// function node returning the preferred CWBVH child octant
+		// (0-7). Used only when useCompressedWideBVH is enabled.
+		childOrderFn?: function | null,
 
 		// function node testing the shape against a BVH node's bounds.
 		intersectsBoundsFn: function,
