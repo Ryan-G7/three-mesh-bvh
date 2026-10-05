@@ -349,22 +349,33 @@ function packBytes( target, offset, values ) {
 
 }
 
+// Worst-case number of traversal stack entries, where each entry is a 64-bit group referencing
+// up to 8 children of one parent. Each wide-tree level pushes at most two groups ( a node-group
+// remainder plus a node or leaf group deferred while leaves are processed ), and the tree root
+// adds one pseudo group.
 function getMaxStackSize( nodes, nodeIndex ) {
 
-	const slots = nodes[ nodeIndex ].slots.filter( slot => slot !== null );
-	let result = Math.max( 1, slots.length );
-	for ( let i = 0, l = slots.length; i < l; i ++ ) {
+	let depth = 0;
+	walk( nodeIndex, 0 );
+	return 1 + 2 * depth;
 
-		const slot = slots[ i ];
-		if ( slot.nodeIndex !== undefined ) {
+	function walk( index, level ) {
 
-			result = Math.max( result, slots.length - 1 + getMaxStackSize( nodes, slot.nodeIndex ) );
+		const node = nodes[ index ];
+		for ( let i = 0; i < MAX_CHILDREN; i ++ ) {
+
+			const slot = node.slots[ i ];
+			if ( slot !== null && slot.nodeIndex !== undefined ) {
+
+				walk( slot.nodeIndex, level + 1 );
+
+			}
 
 		}
 
-	}
+		depth = Math.max( depth, level );
 
-	return result;
+	}
 
 }
 

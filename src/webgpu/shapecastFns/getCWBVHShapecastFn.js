@@ -46,6 +46,13 @@ const getCWBVHChildBounds = wgslTagFn/* wgsl */`
 /**
  * CWBVH traversal variant used by {@link BVHComputeData#getShapecastFn}.
  *
+ * Follows the group-entry traversal of Ylitie et al. (Section 4): each 64-bit stack entry
+ * references up to 8 hit children of a single parent node as a base index plus a hit mask,
+ * and the current group is held in registers. Entries are vec2u where x is the child node
+ * or leaf base index ( bit 31 set for leaf groups ) and y packs an 8-bit hit mask in
+ * traversal-priority order ( bits 24-31 ) with the per-slot 3-bit relative child indices
+ * ( bits 0-23 ). The highest set mask bit always yields the next child to traverse.
+ *
  * @private
  * @param {BVHComputeData} bvhData
  * @param {Object} options
@@ -105,17 +112,22 @@ export function getCWBVHShapecastFn( bvhData, options ) {
 			var didHit = false;
 			var isTLAS = true;
 			var pointer: i32 = 0;
-			var stack: array<u32, ${ CWBVH_STACK_DEPTH }>;
-			stack[ 0 ] = 0u;
+			var stack: array<vec2u, ${ CWBVH_STACK_DEPTH }>;
+
+			// pseudo group referencing the root node: base 0 with a single hit at priority 0
+			stack[ 0 ] = vec2u( 0u, 1u << 24u );
 
 			var blasDidHit = false;
 			var objectIndex = 0u;
 			var localShape: ${ shapeStruct } = shape;
 			var tlasReset: i32 = 0;
 
+			// the current group in registers - group.y == 0 marks it empty
+			var group = vec2u( 0u, 0u );
+
 			loop {
 
-				if ( ! isTLAS && tlasReset == pointer ) {
+				if ( ! isTLAS && tlasReset == pointer && group.y == 0u ) {
 
 					if ( blasDidHit ) {
 
@@ -132,40 +144,76 @@ export function getCWBVHShapecastFn( bvhData, options ) {
 
 				}
 
-				if ( pointer < 0 || pointer >= i32( ${ CWBVH_STACK_DEPTH } ) ) {
+				if ( group.y == 0u ) {
 
-					break;
+					if ( pointer < 0 || pointer >= i32( ${ CWBVH_STACK_DEPTH } ) ) {
+
+						break;
+
+					}
+
+					group = stack[ pointer ];
+					pointer = pointer - 1;
 
 				}
 
-				let entry = stack[ pointer ];
-				pointer = pointer - 1;
+				${ childOrderSnippet }
+				let priorityMask = 7u - childOrder;
 
-				if ( ( entry & 0x80000000u ) != 0u ) {
+				if ( ( group.x & 0x80000000u ) != 0u ) {
 
-					let leafIndex = entry & 0x7fffffffu;
-					let leaf = ${ leaves }[ leafIndex ];
+					// leaf group - process every referenced leaf in traversal order
+					let leafBase = group.x & 0x7fffffffu;
+					let packedIndices = group.y & 0x00ffffffu;
+					var hits = group.y >> 24u;
+					group = vec2u( 0u, 0u );
 
-					if ( ( leaf.info & 0x80000000u ) != 0u ) {
+					loop {
 
-						objectIndex = leaf.info & 0x7fffffffu;
-						let transform = ${ transforms }[ objectIndex ];
-						if ( transform.visible != 0u ) {
+						if ( hits == 0u ) {
 
-							tlasReset = pointer;
-							isTLAS = false;
-							blasDidHit = false;
-							localShape = shape;
-							${ transformShapeSnippet }
-
-							pointer = pointer + 1;
-							stack[ pointer ] = leaf.value;
+							break;
 
 						}
 
-					} else {
+						let priority = 31u - countLeadingZeros( hits );
+						hits = hits & ~( 1u << priority );
 
-						blasDidHit = ${ intersectRangeFn }( localShape, leaf.value, leaf.info${ resultArgSnippet } ) || blasDidHit;
+						let slot = priority ^ priorityMask;
+						let leafIndex = leafBase + ( ( packedIndices >> ( slot * 3u ) ) & 7u );
+						let leaf = ${ leaves }[ leafIndex ];
+
+						if ( ( leaf.info & 0x80000000u ) != 0u ) {
+
+							objectIndex = leaf.info & 0x7fffffffu;
+							let transform = ${ transforms }[ objectIndex ];
+							if ( transform.visible != 0u ) {
+
+								// defer the remaining leaves of this group and enter the BLAS
+								if ( hits != 0u ) {
+
+									pointer = pointer + 1;
+									stack[ pointer ] = vec2u( leafBase | 0x80000000u, ( hits << 24u ) | packedIndices );
+
+								}
+
+								tlasReset = pointer;
+								isTLAS = false;
+								blasDidHit = false;
+								localShape = shape;
+								${ transformShapeSnippet }
+
+								pointer = pointer + 1;
+								stack[ pointer ] = vec2u( leaf.value, 1u << 24u );
+								break;
+
+							}
+
+						} else {
+
+							blasDidHit = ${ intersectRangeFn }( localShape, leaf.value, leaf.info${ resultArgSnippet } ) || blasDidHit;
+
+						}
 
 					}
 
@@ -173,38 +221,83 @@ export function getCWBVHShapecastFn( bvhData, options ) {
 
 				}
 
-				let node = ${ nodes }[ entry ];
-				${ childOrderSnippet }
+				// node group - extract the highest-priority referenced node
+				let childBase = group.x;
+				let packedNodeIndices = group.y & 0x00ffffffu;
+				var nodeGroupHits = group.y >> 24u;
 
-				for ( var orderIndex: i32 = 7; orderIndex >= 0; orderIndex = orderIndex - 1 ) {
+				let nodePriority = 31u - countLeadingZeros( nodeGroupHits );
+				nodeGroupHits = nodeGroupHits & ~( 1u << nodePriority );
 
-					let slot = u32( orderIndex ) ^ childOrder;
-					let shift = ( slot & 3u ) * 8u;
-					let metadata = ( node.data[ 18u + ( slot >> 2u ) ] >> shift ) & 0xffu;
+				let nodeSlot = nodePriority ^ priorityMask;
+				let nodeIndex = childBase + ( ( packedNodeIndices >> ( nodeSlot * 3u ) ) & 7u );
+
+				// defer the remaining referenced nodes of this group
+				if ( nodeGroupHits != 0u ) {
+
+					pointer = pointer + 1;
+					stack[ pointer ] = vec2u( childBase, ( nodeGroupHits << 24u ) | packedNodeIndices );
+
+				}
+
+				group = vec2u( 0u, 0u );
+
+				// intersect all children of the node, forming a node-hit and a leaf-hit group
+				let node = ${ nodes }[ nodeIndex ];
+				var nodeHits = 0u;
+				var nodePacked = 0u;
+				var leafHits = 0u;
+				var leafPacked = 0u;
+
+				for ( var childSlot = 0u; childSlot < 8u; childSlot = childSlot + 1u ) {
+
+					let shift = ( childSlot & 3u ) * 8u;
+					let metadata = ( node.data[ 18u + ( childSlot >> 2u ) ] >> shift ) & 0xffu;
 					if ( metadata == 0u ) {
 
 						continue;
 
 					}
 
-					let bounds = ${ getCWBVHChildBounds }( node, slot );
+					let bounds = ${ getCWBVHChildBounds }( node, childSlot );
 					if ( ${ intersectsBoundsFn }( localShape, bounds${ resultArgSnippet } ) == 0u ) {
 
 						continue;
 
 					}
 
-					pointer = pointer + 1;
+					let priorityBit = 1u << ( childSlot ^ priorityMask );
+					let packedIndex = ( metadata & 7u ) << ( childSlot * 3u );
 					if ( ( metadata & 0x80u ) != 0u ) {
 
-						stack[ pointer ] = node.data[ 4 ] + ( metadata & 7u );
+						nodeHits = nodeHits | priorityBit;
+						nodePacked = nodePacked | packedIndex;
 
 					} else {
 
-						let leafIndex = node.data[ 5 ] + ( metadata & 7u );
-						stack[ pointer ] = 0x80000000u | leafIndex;
+						leafHits = leafHits | priorityBit;
+						leafPacked = leafPacked | packedIndex;
 
 					}
+
+				}
+
+				// leaves are processed before the closest child subtree, matching the paper's
+				// traversal loop: the node group waits on the stack while the leaf group is
+				// handled from registers on the next iteration
+				if ( nodeHits != 0u && leafHits != 0u ) {
+
+					pointer = pointer + 1;
+					stack[ pointer ] = vec2u( node.data[ 4 ], ( nodeHits << 24u ) | nodePacked );
+					group = vec2u( 0x80000000u | node.data[ 5 ], ( leafHits << 24u ) | leafPacked );
+
+				} else if ( nodeHits != 0u ) {
+
+					group = vec2u( node.data[ 4 ], ( nodeHits << 24u ) | nodePacked );
+
+				} else if ( leafHits != 0u ) {
+
+					group = vec2u( 0x80000000u | node.data[ 5 ], ( leafHits << 24u ) | leafPacked );
 
 				}
 

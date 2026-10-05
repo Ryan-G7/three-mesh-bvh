@@ -108,7 +108,7 @@ function buildCWBVHData( bvh, subtreeInfo, primitiveInfo ) {
 		...builder.build(),
 		tlasNodeCount: tlas.nodeCount,
 		tlasLeafCount,
-		maxStackSize: tlas.maxStackSize + maxBlasStackSize - 1,
+		maxStackSize: tlas.maxStackSize + maxBlasStackSize,
 	};
 
 }
