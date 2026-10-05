@@ -1,16 +1,16 @@
 import { BYTES_PER_NODE, UINT32_PER_NODE } from '../../core/Constants.js';
 import { COUNT, IS_LEAF, OFFSET, RIGHT_NODE } from '../../core/utils/nodeBufferUtils.js';
 
-export const CWBVH_NODE_BYTES = 80;
-export const CWBVH_NODE_U32 = CWBVH_NODE_BYTES / 4;
+const CWBVH_NODE_BYTES = 80;
+const CWBVH_NODE_U32 = CWBVH_NODE_BYTES / 4;
 
 const MAX_CHILDREN = 8;
 const MAX_LEAF_INDEX = 0x7fffffff;
 
 // SAH cost constants and default leaf size cap from the paper's default configuration (Section 5.1)
-export const CWBVH_SAH_NODE_COST = 1.0;
-export const CWBVH_SAH_TRIANGLE_COST = 0.3;
-export const CWBVH_MAX_LEAF_SIZE = 3;
+const CWBVH_SAH_NODE_COST = 1.0;
+const CWBVH_SAH_TRIANGLE_COST = 0.3;
+const CWBVH_MAX_LEAF_SIZE = 3;
 
 const _float32 = new Float32Array( 1 );
 const _uint32 = new Uint32Array( _float32.buffer );
