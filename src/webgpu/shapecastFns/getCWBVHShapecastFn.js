@@ -8,12 +8,14 @@ const getCWBVHChildBounds = wgslTagFn/* wgsl */`
 	fn bvh_GetCWBVHChildBounds( node: ${ cwbvhNodeStruct }, slot: u32 ) -> ${ bvhNodeBoundsStruct } {
 
 		let exponentData = node.data[ 3 ];
-		let exponent = vec3f(
-			f32( i32( exponentData << 24u ) >> 24u ),
-			f32( i32( exponentData << 16u ) >> 24u ),
-			f32( i32( exponentData << 8u ) >> 24u )
+
+		// the quantization grid scale is 2^e, formed by shifting the stored exponent into the
+		// float exponent bits so it exactly matches the builder's Math.pow( 2, e )
+		let scale = vec3f(
+			bitcast<f32>( u32( ( i32( exponentData << 24u ) >> 24u ) + 127 ) << 23u ),
+			bitcast<f32>( u32( ( i32( exponentData << 16u ) >> 24u ) + 127 ) << 23u ),
+			bitcast<f32>( u32( ( i32( exponentData << 8u ) >> 24u ) + 127 ) << 23u )
 		);
-		let scale = exp2( exponent );
 		let origin = vec3f(
 			bitcast<f32>( node.data[ 0 ] ),
 			bitcast<f32>( node.data[ 1 ] ),
