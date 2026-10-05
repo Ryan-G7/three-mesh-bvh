@@ -67,6 +67,7 @@ function getTransformKey( compositeId, root ) {
 
 function addCWBVHTLAS( builder, bvh, primitiveInfo ) {
 
+	// maxLeafSize 1 keeps every TLAS leaf referencing exactly one cluster subtree
 	return builder.add( bvh._roots[ 0 ], 0, offset => {
 
 		const info = primitiveInfo[ offset ];
@@ -81,7 +82,7 @@ function addCWBVHTLAS( builder, bvh, primitiveInfo ) {
 			meta: 0x80000000 | info.transformSlot,
 		};
 
-	} );
+	}, 1 );
 
 }
 
@@ -646,7 +647,10 @@ export class BVHComputeData {
 	 */
 	getBVH( object, instanceId, rangeTarget ) {
 
-		const { autogenerateBvh, _bvhCache } = this;
+		const { autogenerateBvh, useCompressedWideBVH, _bvhCache } = this;
+
+		// the SAH-optimal CWBVH collapse works best from single-primitive binary leaves
+		const bvhOptions = useCompressedWideBVH ? { targetLeafSize: 1 } : {};
 
 		let bvh = null;
 		if ( object.boundsTree || object.isSkinnedMesh ) {
@@ -660,7 +664,7 @@ export class BVHComputeData {
 			if ( bvh === null && autogenerateBvh ) {
 
 				const id = object.uuid;
-				bvh = _bvhCache.get( id ) || new SkinnedMeshBVH( object );
+				bvh = _bvhCache.get( id ) || new SkinnedMeshBVH( object, bvhOptions );
 				_bvhCache.set( id, bvh );
 
 			}
@@ -675,7 +679,7 @@ export class BVHComputeData {
 			if ( bvh === null && autogenerateBvh ) {
 
 				const id = `batched_${ object.geometry.uuid }_${ range.start }_${ range.count }`;
-				bvh = _bvhCache.get( id ) || new MeshBVH( object.geometry, { range: { ...rangeTarget } } );
+				bvh = _bvhCache.get( id ) || new MeshBVH( object.geometry, { ...bvhOptions, range: { ...rangeTarget } } );
 				_bvhCache.set( id, bvh );
 
 			}
@@ -690,7 +694,7 @@ export class BVHComputeData {
 			if ( bvh === null && autogenerateBvh ) {
 
 				const id = geometry.uuid;
-				bvh = _bvhCache.get( id ) || new MeshBVH( geometry );
+				bvh = _bvhCache.get( id ) || new MeshBVH( geometry, bvhOptions );
 				_bvhCache.set( id, bvh );
 
 			}

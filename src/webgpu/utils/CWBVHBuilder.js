@@ -7,6 +7,11 @@ export const CWBVH_NODE_U32 = CWBVH_NODE_BYTES / 4;
 const MAX_CHILDREN = 8;
 const MAX_LEAF_INDEX = 0x7fffffff;
 
+// SAH cost constants and default leaf size cap from the paper's default configuration (Section 5.1)
+export const CWBVH_SAH_NODE_COST = 1.0;
+export const CWBVH_SAH_TRIANGLE_COST = 0.3;
+export const CWBVH_MAX_LEAF_SIZE = 3;
+
 const _float32 = new Float32Array( 1 );
 const _uint32 = new Uint32Array( _float32.buffer );
 
@@ -102,35 +107,123 @@ function assignSlots( children, parentBounds ) {
 
 }
 
-function getWideChildren( node ) {
+function getSurfaceArea( bounds ) {
 
-	if ( node.isLeaf ) return node.count === 0 ? [] : [ node ];
+	const x = Math.max( bounds[ 3 ] - bounds[ 0 ], 0 );
+	const y = Math.max( bounds[ 4 ] - bounds[ 1 ], 0 );
+	const z = Math.max( bounds[ 5 ] - bounds[ 2 ], 0 );
+	return 2 * ( x * y + y * z + z * x );
 
-	const children = [ node.left, node.right ];
-	while ( children.length < MAX_CHILDREN ) {
+}
 
-		let candidate = - 1;
-		let candidateCount = - 1;
-		for ( let i = 0, l = children.length; i < l; i ++ ) {
+// Bottom-up computation of the optimal SAH cost C(n, i) for representing the subtree of n as
+// a forest of at most i wide BVHs, i in [1, 7] (Section 3.4, Eq. 5-8). Records per node:
+// - sahCost[ i ]: optimal cost for up to i roots
+// - sahLeaf: whether C(n, 1) is achieved by a leaf (always true for binary leaves)
+// - sahDecision[ i ]: for i > 1, the winning root split k, or 0 for "use fewer than i roots"
+// - sahDistK: the winning split k of Cdistribute(n, 8), used when creating an internal node
+function computeSahCosts( node, maxLeafSize ) {
 
-			const child = children[ i ];
-			if ( ! child.isLeaf && child.primitiveCount > candidateCount ) {
+	if ( node.isLeaf || node.count === 0 ) {
 
-				candidate = i;
-				candidateCount = child.primitiveCount;
+		const cost = getSurfaceArea( node.bounds ) * node.primitiveCount * CWBVH_SAH_TRIANGLE_COST;
+		node.sahCost = [ 0, cost, cost, cost, cost, cost, cost, cost ];
+		node.sahLeaf = true;
+		return;
+
+	}
+
+	computeSahCosts( node.left, maxLeafSize );
+	computeSahCosts( node.right, maxLeafSize );
+
+	const area = getSurfaceArea( node.bounds );
+	const cost = new Array( 8 );
+	const decision = new Array( 8 ).fill( 0 );
+	const distK = new Array( 9 );
+
+	function distribute( j ) {
+
+		let best = Infinity;
+		let bestK = 1;
+		for ( let k = 1; k < j; k ++ ) {
+
+			const value = node.left.sahCost[ k ] + node.right.sahCost[ j - k ];
+			if ( value < best ) {
+
+				best = value;
+				bestK = k;
 
 			}
 
 		}
 
-		if ( candidate === - 1 ) break;
-
-		const child = children[ candidate ];
-		children.splice( candidate, 1, child.left, child.right );
+		distK[ j ] = bestK;
+		return best;
 
 	}
 
-	return children;
+	// binary leaves larger than maxLeafSize cannot be subdivided further, so the leaf cap only
+	// applies when merging an internal subtree into a new leaf (Eq. 6)
+	const leafCost = node.primitiveCount <= maxLeafSize
+		? area * node.primitiveCount * CWBVH_SAH_TRIANGLE_COST
+		: Infinity;
+	const internalCost = distribute( 8 ) + area * CWBVH_SAH_NODE_COST;
+
+	if ( leafCost <= internalCost ) {
+
+		cost[ 1 ] = leafCost;
+		node.sahLeaf = true;
+
+	} else {
+
+		cost[ 1 ] = internalCost;
+		node.sahLeaf = false;
+
+	}
+
+	for ( let i = 2; i <= 7; i ++ ) {
+
+		const distributed = distribute( i );
+		if ( distributed < cost[ i - 1 ] ) {
+
+			cost[ i ] = distributed;
+			decision[ i ] = distK[ i ];
+
+		} else {
+
+			cost[ i ] = cost[ i - 1 ];
+
+		}
+
+	}
+
+	node.sahCost = cost;
+	node.sahDecision = decision;
+	node.sahDistK = distK[ 8 ];
+
+}
+
+// Backtracks the stored decisions to collect the optimal forest of at most "roots" wide nodes
+// for the subtree of "node", as { bounds, isLeaf, node } child entries.
+function collectWideChildren( node, roots, out ) {
+
+	if ( roots === 1 || node.sahLeaf ) {
+
+		out.push( { bounds: node.bounds, isLeaf: node.sahLeaf, node } );
+		return;
+
+	}
+
+	const k = node.sahDecision[ roots ];
+	if ( k === 0 ) {
+
+		collectWideChildren( node, roots - 1, out );
+		return;
+
+	}
+
+	collectWideChildren( node.left, k, out );
+	collectWideChildren( node.right, roots - k, out );
 
 }
 
@@ -167,6 +260,11 @@ function readTree( root, nodeIndex ) {
 			bounds,
 			left,
 			right,
+
+			// a subtree's primitives are contiguous in the index buffer, so internal nodes
+			// can be collapsed into leaves referencing the merged range
+			offset: left.offset,
+			count: left.count + right.count,
 			primitiveCount: left.primitiveCount + right.primitiveCount,
 			isLeaf: false,
 		};
@@ -275,7 +373,9 @@ function getMaxStackSize( nodes, nodeIndex ) {
  * appended so TLAS leaves can reference BLAS root indices in the same node array.
  *
  * The 80-byte layout follows the compressed-wide design described by Ylitie et al. while keeping
- * leaf ranges in a compact side buffer so existing MeshBVH leaf sizes remain supported.
+ * leaf ranges in a compact side buffer so existing MeshBVH leaf sizes remain supported. Binary
+ * nodes are collapsed into wide nodes with the paper's SAH-optimal dynamic program (Section 3.4),
+ * which jointly optimizes internal and leaf nodes under the input tree's topology constraint.
  * @see https://research.nvidia.com/publication/2017-07_efficient-incoherent-ray-traversal-gpus-through-compressed-wide-bvhs
  */
 export class CWBVHBuilder {
@@ -291,9 +391,12 @@ export class CWBVHBuilder {
 	 * @param {ArrayBuffer|SharedArrayBuffer} root
 	 * @param {number} nodeIndex
 	 * @param {(offset:number,count:number) => {value:number|(() => number), meta:number}} getLeaf
+	 * @param {number} [maxLeafSize=CWBVH_MAX_LEAF_SIZE] - cap on primitives per wide leaf when the
+	 * SAH-optimal collapse merges an internal subtree into a leaf. Use 1 for trees whose leaves
+	 * must keep referencing a single primitive (e.g. TLAS leaves referencing one BLAS each).
 	 * @returns {{root:number,nodeCount:number,maxStackSize:number}}
 	 */
-	add( root, nodeIndex, getLeaf ) {
+	add( root, nodeIndex, getLeaf, maxLeafSize = CWBVH_MAX_LEAF_SIZE ) {
 
 		if ( root.byteLength % BYTES_PER_NODE !== 0 ) {
 
@@ -302,6 +405,7 @@ export class CWBVHBuilder {
 		}
 
 		const tree = readTree( root, nodeIndex );
+		computeSahCosts( tree, maxLeafSize );
 		const start = this.nodes.length;
 		this.nodes.push( null );
 		this._writeNode( tree, start, getLeaf );
@@ -367,7 +471,20 @@ export class CWBVHBuilder {
 
 	_writeNode( tree, nodeIndex, getLeaf ) {
 
-		const children = getWideChildren( tree );
+		// expand the root of this wide node into the SAH-optimal forest of up to 8 children.
+		// A "leaf" decision ( or a binary leaf root ) collapses the whole subtree into one leaf.
+		const children = [];
+		if ( ! tree.isLeaf && ! tree.sahLeaf && tree.count > 0 ) {
+
+			collectWideChildren( tree.left, tree.sahDistK, children );
+			collectWideChildren( tree.right, MAX_CHILDREN - tree.sahDistK, children );
+
+		} else if ( tree.count > 0 ) {
+
+			children.push( { bounds: tree.bounds, isLeaf: true, node: tree } );
+
+		}
+
 		const slots = assignSlots( children, tree.bounds );
 		const internalSlots = slots.filter( child => child !== null && ! child.isLeaf );
 		const childBase = internalSlots.length === 0 ? 0 : this.nodes.length;
@@ -386,7 +503,7 @@ export class CWBVHBuilder {
 			if ( child.isLeaf ) {
 
 				metadata[ slot ] = 0x40 | leafOffset;
-				this.leaves.push( getLeaf( child.offset, child.count ) );
+				this.leaves.push( getLeaf( child.node.offset, child.node.count ) );
 				leafOffset ++;
 
 			} else {
@@ -436,7 +553,7 @@ export class CWBVHBuilder {
 			const child = slots[ slot ];
 			if ( child !== null && ! child.isLeaf ) {
 
-				this._writeNode( child, child.nodeIndex, getLeaf );
+				this._writeNode( child.node, child.nodeIndex, getLeaf );
 
 			}
 
