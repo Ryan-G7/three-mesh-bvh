@@ -204,10 +204,13 @@ function computeSahCosts( node, maxLeafSize ) {
 }
 
 // Backtracks the stored decisions to collect the optimal forest of at most "roots" wide nodes
-// for the subtree of "node", as { bounds, isLeaf, node } child entries.
+// for the subtree of "node", as { bounds, isLeaf, node } child entries. A leaf-optimal subtree
+// ( sahLeaf ) only collapses into a single leaf at one root - when granted more roots it still
+// follows the stored split decisions, which may be strictly cheaper. Binary leaves carry no
+// decision table and contribute themselves regardless of the quota they are granted.
 function collectWideChildren( node, roots, out ) {
 
-	if ( roots === 1 || node.sahLeaf ) {
+	if ( roots === 1 || node.isLeaf || node.count === 0 ) {
 
 		out.push( { bounds: node.bounds, isLeaf: node.sahLeaf, node } );
 		return;
