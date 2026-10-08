@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/three-mesh-bvh.svg?style=flat-square)](https://www.npmjs.com/package/three-mesh-bvh)
 [![build](https://img.shields.io/github/actions/workflow/status/gkjohnson/three-mesh-bvh/node.js.yml?style=flat-square&label=build&branch=master)](https://github.com/gkjohnson/three-mesh-bvh/actions)
+[![docs](https://img.shields.io/badge/docs-API-blue?style=flat-square)](https://gkjohnson.github.io/tools/docs/three-mesh-bvh/)
 [![github](https://flat.badgen.net/badge/icon/github?icon=github&label)](https://github.com/gkjohnson/three-mesh-bvh/)
 [![twitter](https://flat.badgen.net/badge/twitter/@garrettkjohnson/?icon&label)](https://twitter.com/garrettkjohnson)
 [![sponsors](https://img.shields.io/github/sponsors/gkjohnson?style=flat-square&color=1da1f2)](https://github.com/sponsors/gkjohnson/)
@@ -263,9 +264,9 @@ See the shader implementation in the [simple GPU Path Tracing example](https://g
 
 # API
 
-See [API.md](./API.md) for full API documentation.
+See the [docs site](https://gkjohnson.github.io/tools/docs/three-mesh-bvh/) for full API documentation.
 
-See [WEBGPU_API.md](./WEBGPU_API.md) for the WebGPU API documentation.
+The same documentation is also available as markdown in [API.md](./API.md) and, for WebGPU, [WEBGPU_API.md](./WEBGPU_API.md).
 
 ## Gotchas
 
